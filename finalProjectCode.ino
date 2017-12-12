@@ -24,11 +24,13 @@ enum State
   WallFollowing,
   TurnRight,
   TurnLeft,
+  Align,
   TurnToFlame,
   ApproachFlame,
   FanOn,
   TurnToStart,
   MoveForward,
+  Reverse,
   TurnToWall,
   WallFollowingStage2,
   TurnLeftStage2,
@@ -47,7 +49,7 @@ const int motorRightForwardPin = 4;
 const int motorRightReversePin = 5;
 const int motorLeftForwardPin = 6;
 const int motorLeftReversePin = 7;
-const int FORWARD = 255;
+const int FORWARD = 254;
 const int STALL = 127;
 const int REVERSE = 0;
 int motorRightSpeed = 0;
@@ -96,7 +98,11 @@ bool odometryEnabled = true;
 unsigned long calibrationTimer = 0;
 bool stopped=true;
 int gyroCounter =0;
+bool edgeFlag = false;
 
+void edgeInterrupt(){
+  edgeFlag = true;
+}
 
 ISR(PCINT0_vect){
   byte readings = 0;
@@ -201,6 +207,7 @@ void setup() {
   gyroError += gyro.g.z;
   PCMSK0 |= bit(leftEncInt1) | bit (leftEncInt2) | bit(rightEncInt1) | bit(rightEncInt2); //enable bits corresponding to encoder pins in the interrupt enable mask register
   PCICR  |= bit (PCIE0); //enable bit corresponding to pins 10-13 and 50-53 in the interrupt enable register.
+  attachInterrupt(digitalPinToInterrupt(lightSensorPin), edgeInterrupt, RISING);
   //Timer3.initialize();
   //Timer3.attachInterrupt(synchronousUpdate, 100);
   //OdometryProject::zero();
@@ -259,18 +266,18 @@ void updateGyro(){
   lcd.print((int)turningController.getError());
 }
 
-void gyroSnapToWall(){
-  int actualHeading = ((int)gyroHeading)%360;
+int gyroSnapToWall(int input){
+  int actualHeading = input%360;
   if(actualHeading<0)
     actualHeading += 360;
   if(actualHeading>315||actualHeading<=45)
-    gyroHeading = 0;
+    return 0;
   else if(actualHeading>45&&actualHeading<=135)
-    gyroHeading = 90;
+    return 90;
   else if(actualHeading>135&&actualHeading<=225)
-    gyroHeading = 180;
+    return 180;
   else if(actualHeading>225&&actualHeading<=315)
-    gyroHeading = 270;
+    return 270;
 }
 
 void positionUpdate(){
@@ -348,20 +355,20 @@ void wallFollowingSequence(){
   int distOut = constrain(distController.outSpeed, -48, 48);
   int alignOut = constrain(alignController.outSpeed, -16, 16);
   if(alignController.isInTolerance(1))
-    gyroSnapToWall();
+    gyroHeading = gyroSnapToWall(gyroHeading);
   motorRightSpeed = STALL + 64+distOut+alignOut;
   motorLeftSpeed = STALL + 64-distOut-alignOut;
   scaleToMaxSpeed(); 
 }
 
 void forwardSequence(){
-  motorRightSpeed = STALL + constrain(forwardController.outSpeed,-127,128);
+  motorRightSpeed = STALL + constrain(forwardController.outSpeed,-STALL,STALL);
   motorLeftSpeed = motorRightSpeed;
 }
 
 void turningSequence(){
-  motorRightSpeed = STALL-(int)constrain(turningController.outSpeed, -127, 128);
-  motorLeftSpeed = STALL+(int)constrain(turningController.outSpeed, -127, 128);
+  motorRightSpeed = STALL-(int)constrain(turningController.outSpeed, -STALL, STALL);
+  motorLeftSpeed = STALL+(int)constrain(turningController.outSpeed, -STALL, STALL);
 }
 
 void continueState(){
@@ -383,6 +390,9 @@ void continueState(){
       case TurnLeft:
         turningSequence();
       break;
+      /*case Align:
+        turningSequence();
+      break;*/
       case TurnToFlame:
         
       break;
@@ -396,6 +406,9 @@ void continueState(){
 
       break;
       case MoveForward:
+        forwardSequence();
+      break;
+      case Reverse:
         forwardSequence();
       break;
       case TurnToWall:
@@ -414,6 +427,10 @@ void continueState(){
 }
 
 bool checkStateChange(){
+  if(edgeFlag){
+    currentState = Reverse;
+    return true;
+  }
   switch (currentState)
     {
       case Calibration:
@@ -428,7 +445,7 @@ bool checkStateChange(){
           return true;
         }
         else if(sideUltra.getLastDist()>hallWidth){
-          currentState = MoveForward;
+          currentState = MoveForward; //Align
           return true;
         }
       break;
@@ -440,10 +457,18 @@ bool checkStateChange(){
       break;
       case TurnLeft:
         if(turningController.isInTolerance()){
+          if(sideUltra.getLastDist()>hallWidth/2)
+            currentState = MoveForward;
           currentState = WallFollowing;
           return true;
         }
       break;
+      /*case Align:
+        if(turningController.isInTolerance()){
+          currentState = MoveForward;
+          return true;
+        }
+      break;*/
       case TurnToFlame:
 
       break;
@@ -463,6 +488,12 @@ bool checkStateChange(){
           }else{
             currentState = TurnRight;
           }
+          return true;
+        }
+      break;
+      case Reverse:
+        if(forwardController.isInTolerance()){
+          currentState = TurnLeft;
           return true;
         }
       break;
@@ -498,6 +529,9 @@ void beginState(){
       case TurnLeft:
         turningController.setGoal(gyroHeading-90); //maybe want this to be 100
       break;
+      /*case Align:
+        turningController.setGoal(gyroSnapToWall(gyroHeading));
+      break;*/
       case TurnToFlame:
 
       break;
@@ -513,6 +547,14 @@ void beginState(){
       case MoveForward:
         forwardInput = 0;
         forwardController.setGoal(12.0);
+      break;
+      case Reverse:
+        edgeFlag = false;
+        forwardInput = 0;
+        forwardController.kp = -forwardController.kp;
+        forwardController.ki = -forwardController.ki;
+        forwardController.kd = -forwardController.kd;
+        forwardController.setGoal(6.0);
       break;
       case TurnToWall:
 
@@ -560,6 +602,11 @@ void endState(){
       break;
       case MoveForward:
 
+      break;
+      case Reverse:
+        forwardController.kp = -forwardController.kp;
+        forwardController.ki = -forwardController.ki;
+        forwardController.kd = -forwardController.kd;
       break;
       case TurnToWall:
 
