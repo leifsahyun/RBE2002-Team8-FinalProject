@@ -190,11 +190,12 @@ void setup() {
   gyro.init();
   gyro.enableDefault();
   /*distController.toPrint = true;
-  alignController.toPrint = true;*/
-  turningController.toPrint = true;/*
+  alignController.toPrint = true;
+  turningController.toPrint = true;
   forwardController.toPrint = true;*/
   forwardController.kp = 25;
   forwardController.ki = -0.00001;
+  forwardController.defaultTolerance = 1;
   turningController.ki = 0;
   gyro.read();
   gyroError += gyro.g.z;
@@ -252,6 +253,10 @@ void updateGyro(){
   gyroHeading += (gyro.g.z - gyroError)*G_gain;
   lcd.clear();
   lcd.print((int)gyroHeading);
+  lcd.print(" ");
+  lcd.print(currentState);
+  lcd.print(" ");
+  lcd.print((int)turningController.getError());
 }
 
 void gyroSnapToWall(){
@@ -285,8 +290,8 @@ void synchronousUpdate(){
   {
     endState();
     beginState();
-    lastState = currentState;
   }
+  lastState = currentState;
   continueState();
   distController.updatePid();
   alignController.updatePid();
@@ -453,10 +458,12 @@ bool checkStateChange(){
       break;
       case MoveForward:
         if(forwardController.isInTolerance()){
-          if(sideUltra.getLastDist()<hallWidth/2)
+          if(sideUltra.getLastDist()<hallWidth/2){
             currentState = WallFollowing;
-          else
+          }else{
             currentState = TurnRight;
+          }
+          return true;
         }
       break;
       case TurnToWall:
@@ -489,7 +496,7 @@ void beginState(){
         turningController.setGoal(gyroHeading+90);
       break;
       case TurnLeft:
-        turningController.setGoal(gyroHeading-90);
+        turningController.setGoal(gyroHeading-90); //maybe want this to be 100
       break;
       case TurnToFlame:
 
@@ -505,7 +512,7 @@ void beginState(){
       break;
       case MoveForward:
         forwardInput = 0;
-        forwardController.setGoal(15.0);
+        forwardController.setGoal(12.0);
       break;
       case TurnToWall:
 
