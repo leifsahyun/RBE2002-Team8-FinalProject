@@ -19,6 +19,8 @@
 //#include "OdometryProject.h"
 #include "PidControl.h"
 #include "Ultrasonic.h"
+#define FLAME_DIFF A0
+
 enum State
   {Calibration,
   WallFollowing,
@@ -78,6 +80,7 @@ float distInput=0;
 float alignInput=0;
 float flameInput=0;
 float turningInput=0;
+float approachInput=0;
 float gyroError=0;
 float G_gain = .002625;
 float gyroHeading = 0;
@@ -89,7 +92,9 @@ PidControl alignController(&alignInput, 0);
 PidControl turningController(&gyroHeading,0);
 PidControl forwardController(&forwardInput,0);
 PidControl flameController(&flameInput,0);
-const int lightSensorPin = 3;
+PidControl approachController(&approachInput,0);
+const int lightSensorPin = 8;
+const int topFlamePin = 3;
 int motorDiff;
 int motorSpeed;
 unsigned long timer = 0;
@@ -98,10 +103,10 @@ bool odometryEnabled = true;
 unsigned long calibrationTimer = 0;
 bool stopped=true;
 int gyroCounter =0;
-bool edgeFlag = false;
+bool flameFlag = false;
 
-void edgeInterrupt(){
-  edgeFlag = true;
+void flameInterrupt(){
+  flameFlag = true;
 }
 
 ISR(PCINT0_vect){
@@ -202,12 +207,13 @@ void setup() {
   forwardController.kp = 25;
   forwardController.ki = -0.00001;
   forwardController.defaultTolerance = 1;
+  approachController.defaultTolerance = 1;
   turningController.ki = 0;
   gyro.read();
   gyroError += gyro.g.z;
   PCMSK0 |= bit(leftEncInt1) | bit (leftEncInt2) | bit(rightEncInt1) | bit(rightEncInt2); //enable bits corresponding to encoder pins in the interrupt enable mask register
   PCICR  |= bit (PCIE0); //enable bit corresponding to pins 10-13 and 50-53 in the interrupt enable register.
-  attachInterrupt(digitalPinToInterrupt(lightSensorPin), edgeInterrupt, RISING);
+  attachInterrupt(digitalPinToInterrupt(topFlamePin), flameInterrupt, FALLING);
   //Timer3.initialize();
   //Timer3.attachInterrupt(synchronousUpdate, 100);
   //OdometryProject::zero();
@@ -371,6 +377,18 @@ void turningSequence(){
   motorLeftSpeed = STALL+(int)constrain(turningController.outSpeed, -STALL, STALL);
 }
 
+void flameTurningSequence(){
+  flameInput = analogRead(FLAME_DIFF);
+  motorRightSpeed = STALL-(int)constrain(flameController.outSpeed, -STALL, STALL);
+  motorLeftSpeed = STALL+(int)constrain(flameController.outSpeed, -STALL, STALL);
+}
+
+void flameApproachSequence(){
+  approachInput = frontUltra.getLastDist();
+  motorRightSpeed = STALL-(int)constrain(approachController.outSpeed, -STALL, STALL);
+  motorLeftSpeed = STALL-(int)constrain(approachController.outSpeed, -STALL, STALL);
+}
+
 void continueState(){
   switch (currentState)
     {
@@ -394,10 +412,10 @@ void continueState(){
         turningSequence();
       break;*/
       case TurnToFlame:
-        
+        flameTurningSequence();
       break;
       case ApproachFlame:
-
+        flameApproachSequence();
       break;
       case FanOn:
 
@@ -427,8 +445,11 @@ void continueState(){
 }
 
 bool checkStateChange(){
-  if(edgeFlag){
+  if(!digitalRead(lightSensorPin)){
     currentState = Reverse;
+    return true;
+  } else if (flameFlag){
+    currentState = TurnToFlame;
     return true;
   }
   switch (currentState)
@@ -470,10 +491,16 @@ bool checkStateChange(){
         }
       break;*/
       case TurnToFlame:
-
+        if(flameController.isInTolerance()){
+          currentState = ApproachFlame;
+          return true;
+        }
       break;
       case ApproachFlame:
-
+        if(approachController.isInTolerance()){
+          currentState = FanOn;
+          return true;
+        }
       break;
       case FanOn:
 
@@ -533,10 +560,10 @@ void beginState(){
         turningController.setGoal(gyroSnapToWall(gyroHeading));
       break;*/
       case TurnToFlame:
-
+        flameController.setGoal(0);
       break;
       case ApproachFlame:
-
+        approachController.setGoal(2);
       break;
       case FanOn:
 
@@ -549,7 +576,6 @@ void beginState(){
         forwardController.setGoal(12.0);
       break;
       case Reverse:
-        edgeFlag = false;
         forwardInput = 0;
         forwardController.kp = -forwardController.kp;
         forwardController.ki = -forwardController.ki;
