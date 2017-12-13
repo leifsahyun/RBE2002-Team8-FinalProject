@@ -1,3 +1,5 @@
+#include <Servo.h>
+
 #include <Wire.h>
 
 #include <LiquidCrystal.h>
@@ -72,6 +74,7 @@ long rightEncCount = 0;
 byte lastReadings = 0;
 L3G gyro;
 LiquidCrystal lcd(40,41,42,43,44,45);
+Servo esc;
 Ultrasonic frontUltra(22, 18);
 Ultrasonic sideUltra(23, 19);
 Ultrasonic rearUltra(24, 2);
@@ -84,8 +87,8 @@ float approachInput=0;
 float gyroError=0;
 float G_gain = .002625;
 float gyroHeading = 0;
-const float wallDist = 5;
-const int hallWidth = 20;
+const float wallDist = 4.5;
+const int hallWidth = 16;
 const int gapWidth = 20;
 PidControl distController(&distInput, wallDist);
 PidControl alignController(&alignInput, 0);
@@ -102,8 +105,11 @@ const float encTicksPerInch = -694.5;
 bool odometryEnabled = true;
 unsigned long calibrationTimer = 0;
 bool stopped=true;
-int gyroCounter =0;
+int calibrationCounter =0;
 bool flameFlag = false;
+int flameError = 1024;
+unsigned long fanTimer = 0;
+bool finalDist = false;
 
 void flameInterrupt(){
   flameFlag = true;
@@ -177,6 +183,9 @@ ISR(PCINT0_vect){
 }
 
 void setup() {
+  pinMode(49, OUTPUT);
+  esc.attach(49);
+  esc.write(10);
   pinMode(4, OUTPUT);
   pinMode(5, OUTPUT);
   pinMode(6, OUTPUT);
@@ -201,13 +210,18 @@ void setup() {
   gyro.init();
   gyro.enableDefault();
   /*distController.toPrint = true;
-  alignController.toPrint = true;
+  alignController.toPrint = true;*/
   turningController.toPrint = true;
-  forwardController.toPrint = true;*/
+  /*forwardController.toPrint = true;*/
+  //flameController.toPrint = true;
+  flameController.kp = 0.5;
+  flameController.ki = 0.00000001;
+  flameController.defaultTolerance = 50;
   forwardController.kp = 25;
   forwardController.ki = -0.00001;
   forwardController.defaultTolerance = 1;
-  approachController.defaultTolerance = 1;
+  approachController.defaultTolerance = 2;
+  approachController.ki = 0;
   turningController.ki = 0;
   gyro.read();
   gyroError += gyro.g.z;
@@ -225,6 +239,10 @@ void loop() {
   Serial.println("here");
   Serial.println(currentState);
   Serial.println(digitalRead(buttonPin));
+  Serial.print("flame sensor: ");
+  Serial.println(analogRead(A1));
+  Serial.print("error: ");
+  Serial.println(flameError);
   synchronousUpdate();
   if(currentState==Calibration)
     return;
@@ -264,12 +282,16 @@ void scaleToMaxSpeed(){
 void updateGyro(){
   gyro.read();
   gyroHeading += (gyro.g.z - gyroError)*G_gain;
-  lcd.clear();
-  lcd.print((int)gyroHeading);
-  lcd.print(" ");
-  lcd.print(currentState);
-  lcd.print(" ");
-  lcd.print((int)turningController.getError());
+  if(!finalDist){
+    lcd.clear();
+    lcd.print(currentState);
+    lcd.print(" ");
+    lcd.print((int)gyroHeading);
+    lcd.print(" ");
+    lcd.print(pos.x);
+    lcd.print(" ");
+    lcd.print(pos.y);
+  }
 }
 
 int gyroSnapToWall(int input){
@@ -296,6 +318,25 @@ void positionUpdate(){
   rightEncCount = 0;
 }
 
+void negPositionUpdate(){
+  float dist = (leftEncCount + rightEncCount)/2/encTicksPerInch;
+  forwardInput-=dist;
+  pos.x-=dist*cos(pos.heading);
+  pos.y-=dist*sin(pos.heading);
+  pos.heading = gyroHeading;
+  leftEncCount = 0;
+  rightEncCount = 0;
+}
+
+void updateControllers(){
+  flameController.updatePid();
+  approachController.updatePid();
+  distController.updatePid();
+  alignController.updatePid();
+  turningController.updatePid();
+  forwardController.updatePid();
+}
+
 void synchronousUpdate(){
   if(odometryEnabled)
     positionUpdate();
@@ -306,16 +347,13 @@ void synchronousUpdate(){
   }
   lastState = currentState;
   continueState();
-  distController.updatePid();
-  alignController.updatePid();
-  turningController.updatePid();
-  forwardController.updatePid();
+  updateControllers();
   if(!stopped){
     motorRightWrite(constrain(motorRightSpeed, REVERSE, FORWARD));
     motorLeftWrite(constrain(motorLeftSpeed, REVERSE, FORWARD));
   } else {
-    motorRightWrite(127);
-    motorLeftWrite(127);
+    motorRightWrite(STALL);
+    motorLeftWrite(STALL);
   }
 }
 
@@ -354,6 +392,7 @@ void safeTriggerAllUltras(){
 }
 
 void wallFollowingSequence(){
+  positionUpdate();
   noInterrupts();
   distInput = (sideUltra.getLastDist() + rearUltra.getLastDist())/2;
   alignInput = sideUltra.getLastDist()-rearUltra.getLastDist();
@@ -368,6 +407,7 @@ void wallFollowingSequence(){
 }
 
 void forwardSequence(){
+  positionUpdate();
   motorRightSpeed = STALL + constrain(forwardController.outSpeed,-STALL,STALL);
   motorLeftSpeed = motorRightSpeed;
 }
@@ -379,14 +419,16 @@ void turningSequence(){
 
 void flameTurningSequence(){
   flameInput = analogRead(FLAME_DIFF);
-  motorRightSpeed = STALL-(int)constrain(flameController.outSpeed, -STALL, STALL);
-  motorLeftSpeed = STALL+(int)constrain(flameController.outSpeed, -STALL, STALL);
+  motorRightSpeed = STALL+(int)constrain(flameController.outSpeed, -STALL, STALL);
+  motorLeftSpeed = STALL-(int)constrain(flameController.outSpeed, -STALL, STALL);
 }
 
 void flameApproachSequence(){
+  positionUpdate();
   approachInput = frontUltra.getLastDist();
-  motorRightSpeed = STALL-(int)constrain(approachController.outSpeed, -STALL, STALL);
-  motorLeftSpeed = STALL-(int)constrain(approachController.outSpeed, -STALL, STALL);
+  flameInput = analogRead(FLAME_DIFF);
+  motorRightSpeed = STALL-(int)(0.75*constrain(approachController.outSpeed, -STALL, STALL)) + (int)(0.25*constrain(flameController.outSpeed, -STALL, STALL));
+  motorLeftSpeed = STALL-(int)(0.75*constrain(approachController.outSpeed, -STALL, STALL)) - (int)(0.25*constrain(flameController.outSpeed, -STALL, STALL));
 }
 
 void continueState(){
@@ -396,7 +438,9 @@ void continueState(){
       if(millis() < calibrationTimer+2000){
         gyro.read();
         gyroError += gyro.g.z;
-        gyroCounter++;
+        if(flameError > analogRead(A1) && analogRead(A1)!=0)
+          flameError = analogRead(A1);
+        calibrationCounter++;
       }
       break;
       case WallFollowing:
@@ -408,9 +452,9 @@ void continueState(){
       case TurnLeft:
         turningSequence();
       break;
-      /*case Align:
+      case Align:
         turningSequence();
-      break;*/
+      break;
       case TurnToFlame:
         flameTurningSequence();
       break;
@@ -433,7 +477,7 @@ void continueState(){
 
       break;
       case WallFollowingStage2:
-        wallFollowingSequence();
+      
       break;
       case TurnLeftStage2:
 
@@ -445,10 +489,11 @@ void continueState(){
 }
 
 bool checkStateChange(){
-  if(!digitalRead(lightSensorPin)){
+  /*if(!digitalRead(lightSensorPin)){
     currentState = Reverse;
     return true;
-  } else if (flameFlag){
+  }*/
+  if (currentState!=Calibration && currentState!=ApproachFlame && analogRead(A1)<flameError - 10){
     currentState = TurnToFlame;
     return true;
   }
@@ -461,12 +506,12 @@ bool checkStateChange(){
         }
       break;
       case WallFollowing:
-        if(frontUltra.getLastDist()<wallDist+1){
-          currentState = TurnLeft;
+        if(sideUltra.getLastDist()>hallWidth){
+          currentState = MoveForward;
           return true;
         }
-        else if(sideUltra.getLastDist()>hallWidth){
-          currentState = MoveForward; //Align
+        if(frontUltra.getLastDist()<wallDist+1){
+          currentState = TurnLeft;
           return true;
         }
       break;
@@ -503,18 +548,25 @@ bool checkStateChange(){
         }
       break;
       case FanOn:
-
+        if(millis()>fanTimer+5000){
+          currentState = TurnToStart;
+          return true;
+        }
       break;
       case TurnToStart:
 
       break;
       case MoveForward:
+        if(frontUltra.getLastDist()<wallDist+1){
+          currentState = TurnRight;
+          return true;
+        }
+        if(sideUltra.getLastDist()<hallWidth/2 && rearUltra.getLastDist()<hallWidth/2){
+          currentState = WallFollowing;
+          return true;
+        }
         if(forwardController.isInTolerance()){
-          if(sideUltra.getLastDist()<hallWidth/2){
-            currentState = WallFollowing;
-          }else{
-            currentState = TurnRight;
-          }
+          currentState = TurnRight;
           return true;
         }
       break;
@@ -551,29 +603,49 @@ void beginState(){
         alignController.setGoal(0);
       break;
       case TurnRight:
-        turningController.setGoal(gyroHeading+90);
+        turningController.setGoal(gyroSnapToWall(gyroHeading+90));
       break;
       case TurnLeft:
-        turningController.setGoal(gyroHeading-90); //maybe want this to be 100
+        turningController.setGoal(gyroHeading-90); 
       break;
-      /*case Align:
+      case Align:
+        if(gyroHeading<0)
+          gyroHeading+=360;
+        else if(gyroHeading>360)
+          gyroHeading = (int)gyroHeading%360;
         turningController.setGoal(gyroSnapToWall(gyroHeading));
-      break;*/
+      break;
       case TurnToFlame:
-        flameController.setGoal(0);
+        flameController.setGoal(635);
       break;
       case ApproachFlame:
-        approachController.setGoal(2);
+        approachController.setGoal(6);
       break;
       case FanOn:
-
+        stopped = true;
+        esc.write(170);
+        fanTimer = millis();
+        frontUltra.getLastDist();
+        pos.x;
+        pos.y;
+        pos.heading;
+        finalDist = true;
+        lcd.clear();
+        lcd.print(" X: ");
+        lcd.print(pos.x + frontUltra.getLastDist() * cos(pos.heading));
+        lcd.print(" Y: ");
+        lcd.print(pos.y + frontUltra.getLastDist() * sin(pos.heading));
+        lcd.print(" Z: ");
+        lcd.print(5);
+    
+        
       break;
       case TurnToStart:
 
       break;
       case MoveForward:
         forwardInput = 0;
-        forwardController.setGoal(12.0);
+        forwardController.setGoal(16);
       break;
       case Reverse:
         forwardInput = 0;
@@ -602,7 +674,8 @@ void endState(){
   switch (lastState)
     {
       case Calibration:
-        gyroError = gyroError/gyroCounter;
+        gyroError = gyroError/calibrationCounter;
+        esc.write(0);
         stopped = false;
       break;
       case WallFollowing:
@@ -621,7 +694,7 @@ void endState(){
 
       break;
       case FanOn:
-
+        esc.write(0);
       break;
       case TurnToStart:
 
