@@ -1,3 +1,11 @@
+/**
+ * Ultrasonic.cpp
+ * 
+ * Created On: 11/11/2017
+ * Last Modified: 12/11/2017
+ * Author: Leif Sahyun
+ */
+
 #include "Ultrasonic.h"
 
 Ultrasonic *Ultrasonic::triggeredObj = NULL;

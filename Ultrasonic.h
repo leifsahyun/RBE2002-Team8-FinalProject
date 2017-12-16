@@ -1,3 +1,16 @@
+/**
+ * Ultrasonic.h
+ * 
+ * Created On: 11/11/2017
+ * Last Modified: 12/11/2017
+ * Author: Leif Sahyun
+ * 
+ * Controls any number of HC-SR04 ultrasonic sensors where the sensor echo pins are attached to interrupt
+ * pins on the Arduino. Each ultrasonic sensor must be triggered before it can be read and only one
+ * ultrasonic can be triggered at a time. This is because Arduino ISRs must be static and because
+ * triggering multiple ultrasonics can result in interference.
+ */
+
 #include "Arduino.h"
 
 class Ultrasonic {
