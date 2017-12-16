@@ -26,7 +26,7 @@
  * turn the fan on and report the location of the flame on an lcd.
  * 
  * Input Pins: A0, A1, A2, 2, 3, 12, 18, 19, 50, 51, 52, 53
- * Output Pins: 4, 5, 6, 7, 11, 22, 23, 24, 49
+ * Output Pins: 4, 5, 6, 7, 11, 22, 23, 24, 40, 41, 42, 43, 44, 45, 49
  */
 
 /**
